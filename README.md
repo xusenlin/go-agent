@@ -11,7 +11,7 @@ hook system, Skill bundles, and MCP (Model Context Protocol) integration.
 
 | Capability | Details |
 |---|---|
-| **Providers** | Anthropic, Google Gemini, Ollama, OpenAI-compatible (DeepSeek, Moonshot…) |
+| **Providers** | Anthropic, Google Gemini, OpenAI-compatible (DeepSeek, Moonshot…) |
 | **Hook system** | Chainable middleware via `.Use()` — intercept & mutate tool I/O |
 | **Streaming** | LLM responses streamed internally; hooks see the full assembled response |
 | **Skills** | Bundle tools + system-prompt fragments into reusable packages |
@@ -61,7 +61,6 @@ func main() {
 |---|---|---|
 | Anthropic | `claude-opus-4-7` | `.WithModel("claude-sonnet-4-6")` |
 | Gemini | `gemini-2.0-flash` | `.WithModel("gemini-2.5-pro")` |
-| Ollama | `llama3.1` | `.WithModel("qwen2.5:14b")` |
 | OpenAI | `gpt-4o` | `.WithModel("deepseek-chat")` |
 
 ---
@@ -74,7 +73,6 @@ agent.New()  (Builder)
     ├── WithProvider(p)        → provider.Provider
     │                            ├── anthropic  (official SDK)
     │                            ├── gemini     (official SDK)
-    │                            ├── ollama     (official SDK)
     │                            └── openai     (hand-rolled, zero deps)
     │
     ├── WithTools(t...)        → tool.Registry
@@ -197,7 +195,6 @@ go mod tidy
 # or individually:
 go get github.com/anthropics/anthropic-sdk-go
 go get google.golang.org/genai
-go get github.com/ollama/ollama/api
 ```
 
 ---
