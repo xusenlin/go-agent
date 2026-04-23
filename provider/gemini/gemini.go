@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"google.golang.org/genai"
 	"github.com/xusenlin/go-agent/provider"
+	"google.golang.org/genai"
 )
 
 const defaultModel = "gemini-2.0-flash"
@@ -17,6 +17,7 @@ type Provider struct {
 	model  string
 }
 
+// Option is a functional option setter.
 type Option func(*Provider)
 
 func WithModel(model string) Option { return func(p *Provider) { p.model = model } }
@@ -42,17 +43,21 @@ func (p *Provider) Model() string     { return p.model }
 func (p *Provider) SetModel(m string) { p.model = m }
 
 func (p *Provider) Chat(ctx context.Context, req *provider.Request) (*provider.Response, error) {
-	model := p.client.GenerativeModel(p.model)
-	p.applyTools(model, req.Tools)
-	if req.System != "" {
-		model.SystemInstruction = &genai.Content{Parts: []genai.Part{genai.Text(req.System)}}
+	contents := p.buildContents(req.Messages)
+	tools := p.buildTools(req.Tools)
+	cfg := &genai.GenerateContentConfig{
+		Tools:             tools,
+		SystemInstruction: p.buildSystem(req.System),
 	}
 
-	session := model.StartChat()
-	session.History = p.buildHistory(req.Messages[:len(req.Messages)-1])
+	// Add thinking level if specified
+	if req.ThinkingLevel != "" {
+		cfg.ThinkingConfig = &genai.ThinkingConfig{
+			IncludeThoughts: true,
+		}
+	}
 
-	last := req.Messages[len(req.Messages)-1]
-	resp, err := session.SendMessage(ctx, genai.Text(last.Content))
+	resp, err := p.client.Models.GenerateContent(ctx, p.model, contents, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("gemini chat: %w", err)
 	}
@@ -63,29 +68,42 @@ func (p *Provider) Stream(ctx context.Context, req *provider.Request) (<-chan *p
 	ch := make(chan *provider.Chunk, 64)
 	go func() {
 		defer close(ch)
-		model := p.client.GenerativeModel(p.model)
-		p.applyTools(model, req.Tools)
-		if req.System != "" {
-			model.SystemInstruction = &genai.Content{Parts: []genai.Part{genai.Text(req.System)}}
-		}
-		session := model.StartChat()
-		session.History = p.buildHistory(req.Messages[:len(req.Messages)-1])
-		last := req.Messages[len(req.Messages)-1]
 
-		iter := session.SendMessageStream(ctx, genai.Text(last.Content))
+		contents := p.buildContents(req.Messages)
+		tools := p.buildTools(req.Tools)
+		cfg := &genai.GenerateContentConfig{
+			Tools:             tools,
+			SystemInstruction: p.buildSystem(req.System),
+		}
+
+		// Add thinking level if specified
+		if req.ThinkingLevel != "" {
+			cfg.ThinkingConfig = &genai.ThinkingConfig{
+				IncludeThoughts: true,
+			}
+		}
+
 		var assembled provider.Response
-		for {
-			resp, err := iter.Next()
+		for resp, err := range p.client.Models.GenerateContentStream(ctx, p.model, contents, cfg) {
 			if err != nil {
-				break
+				ch <- &provider.Chunk{Done: true}
+				return
 			}
 			partial := p.convertResponse(resp)
-			assembled.Content += partial.Content
-			assembled.ToolCalls = append(assembled.ToolCalls, partial.ToolCalls...)
-			assembled.StopReason = partial.StopReason
-			ch <- &provider.Chunk{Delta: partial.Content}
+			if partial != nil {
+				assembled.Content += partial.Content
+				assembled.ToolCalls = append(assembled.ToolCalls, partial.ToolCalls...)
+				assembled.StopReason = partial.StopReason
+				if partial.Content != "" {
+					ch <- &provider.Chunk{Delta: partial.Content}
+				}
+			}
 		}
-		data, _ := json.Marshal(assembled)
+		data, err := json.Marshal(assembled)
+		if err != nil {
+			ch <- &provider.Chunk{Done: true}
+			return
+		}
 		ch <- &provider.Chunk{Done: true, Delta: string(data)}
 	}()
 	return ch, nil
@@ -93,36 +111,75 @@ func (p *Provider) Stream(ctx context.Context, req *provider.Request) (<-chan *p
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-func (p *Provider) applyTools(model *genai.GenerativeModel, tools []provider.ToolDef) {
-	if len(tools) == 0 {
-		return
+func (p *Provider) buildSystem(system string) *genai.Content {
+	if system == "" {
+		return nil
 	}
-	var fds []*genai.FunctionDeclaration
-	for _, t := range tools {
-		var schema genai.Schema
-		_ = json.Unmarshal(t.InputSchema, &schema)
-		fds = append(fds, &genai.FunctionDeclaration{
-			Name:        t.Name,
-			Description: t.Description,
-			Parameters:  &schema,
-		})
+	return &genai.Content{
+		Parts: []*genai.Part{{Text: system}},
 	}
-	model.Tools = []*genai.Tool{{FunctionDeclarations: fds}}
 }
 
-func (p *Provider) buildHistory(msgs []provider.Message) []*genai.Content {
-	var history []*genai.Content
+func (p *Provider) buildContents(msgs []provider.Message) []*genai.Content {
+	contents := make([]*genai.Content, 0, len(msgs))
 	for _, m := range msgs {
 		role := "user"
 		if m.Role == provider.RoleAssistant {
 			role = "model"
 		}
-		history = append(history, &genai.Content{
-			Role:  role,
-			Parts: []genai.Part{genai.Text(m.Content)},
+		var parts []*genai.Part
+		if m.Content != "" {
+			parts = append(parts, &genai.Part{Text: m.Content})
+		}
+		for _, tc := range m.ToolCalls {
+			input, _ := json.Marshal(tc.Input)
+			parts = append(parts, &genai.Part{
+				FunctionCall: &genai.FunctionCall{
+					ID:   tc.ID,
+					Name: tc.Name,
+					Args: unmarshalMap(input),
+				},
+			})
+		}
+		for _, tr := range m.ToolResults {
+			content := tr.Content
+			if tr.IsError {
+				content = "Error: " + content
+			}
+			parts = append(parts, &genai.Part{
+				FunctionResponse: &genai.FunctionResponse{
+					ID:       tr.ToolCallID,
+					Name:     "", // Gemini doesn't echo function name in response
+					Response: map[string]any{"result": content},
+				},
+			})
+		}
+		if len(parts) > 0 {
+			contents = append(contents, &genai.Content{Role: role, Parts: parts})
+		}
+	}
+	return contents
+}
+
+func (p *Provider) buildTools(defs []provider.ToolDef) []*genai.Tool {
+	if len(defs) == 0 {
+		return nil
+	}
+	tools := make([]*genai.Tool, 0, len(defs))
+	for _, t := range defs {
+		var schema *genai.Schema
+		if len(t.InputSchema) > 0 {
+			_ = json.Unmarshal(t.InputSchema, &schema)
+		}
+		tools = append(tools, &genai.Tool{
+			FunctionDeclarations: []*genai.FunctionDeclaration{{
+				Name:        t.Name,
+				Description: t.Description,
+				Parameters:  schema,
+			}},
 		})
 	}
-	return history
+	return tools
 }
 
 func (p *Provider) convertResponse(resp *genai.GenerateContentResponse) *provider.Response {
@@ -132,15 +189,19 @@ func (p *Provider) convertResponse(resp *genai.GenerateContentResponse) *provide
 			continue
 		}
 		for _, part := range cand.Content.Parts {
-			switch v := part.(type) {
-			case genai.Text:
-				r.Content += string(v)
-			case genai.FunctionCall:
-				raw, _ := json.Marshal(v.Args)
+			switch {
+			case part.Text != "":
+				r.Content += part.Text
+			case part.FunctionCall != nil:
+				args, _ := json.Marshal(part.FunctionCall.Args)
+				id := part.FunctionCall.ID
+				if id == "" {
+					id = fmt.Sprintf("call_%s", part.FunctionCall.Name)
+				}
 				r.ToolCalls = append(r.ToolCalls, provider.ToolCall{
-					ID:    v.Name, // Gemini uses name as ID
-					Name:  v.Name,
-					Input: raw,
+					ID:    id,
+					Name:  part.FunctionCall.Name,
+					Input: args,
 				})
 			}
 		}
@@ -149,4 +210,12 @@ func (p *Provider) convertResponse(resp *genai.GenerateContentResponse) *provide
 		}
 	}
 	return r
+}
+
+func unmarshalMap(data json.RawMessage) map[string]any {
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return make(map[string]any)
+	}
+	return m
 }

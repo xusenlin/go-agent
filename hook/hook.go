@@ -15,7 +15,6 @@ import (
 	"encoding/json"
 
 	"github.com/xusenlin/go-agent/provider"
-	"github.com/xusenlin/go-agent/tool/plan"
 )
 
 // ─── Event types ──────────────────────────────────────────────────────────────
@@ -59,14 +58,6 @@ type ToolEndEvent struct {
 	Err       error  // if non-nil, the tool failed
 }
 
-// PlanCreatedEvent fires when the plan tool produces a plan.
-// This is a specialisation of ToolEndEvent for the create_plan tool,
-// making it easy for UI hooks to render a progress view.
-type PlanCreatedEvent struct {
-	Iteration int
-	Steps     []plan.Step
-}
-
 // AgentFinishEvent fires when the agent produces a final answer.
 type AgentFinishEvent struct {
 	Output     string
@@ -101,10 +92,6 @@ type Hook interface {
 	// The hook MAY modify e.Output to change what gets sent back to the LLM.
 	OnToolEnd(ctx context.Context, e *ToolEndEvent) error
 
-	// OnPlanCreated fires specifically when the create_plan tool succeeds.
-	// It fires in addition to (and after) OnToolEnd.
-	OnPlanCreated(ctx context.Context, e *PlanCreatedEvent) error
-
 	// OnAgentFinish fires when the agent produces its final answer.
 	OnAgentFinish(ctx context.Context, e *AgentFinishEvent) error
 
@@ -123,6 +110,5 @@ func (BaseHook) OnThinkStart(_ context.Context, _ *ThinkStartEvent) error  { ret
 func (BaseHook) OnThinkEnd(_ context.Context, _ *ThinkEndEvent) error      { return nil }
 func (BaseHook) OnToolStart(_ context.Context, _ *ToolStartEvent) error    { return nil }
 func (BaseHook) OnToolEnd(_ context.Context, _ *ToolEndEvent) error        { return nil }
-func (BaseHook) OnPlanCreated(_ context.Context, _ *PlanCreatedEvent) error { return nil }
 func (BaseHook) OnAgentFinish(_ context.Context, _ *AgentFinishEvent) error { return nil }
 func (BaseHook) OnAgentError(_ context.Context, _ *AgentErrorEvent) error  { return nil }

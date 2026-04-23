@@ -9,7 +9,6 @@ import (
 	"github.com/xusenlin/go-agent/hook"
 	"github.com/xusenlin/go-agent/provider"
 	"github.com/xusenlin/go-agent/tool"
-	plantool "github.com/xusenlin/go-agent/tool/plan"
 )
 
 // Result is the output of a completed ReAct run.
@@ -27,7 +26,6 @@ type Result struct {
 //     a. Fire OnToolStart (hooks may modify input)
 //     b. Execute the tool
 //     c. Fire OnToolEnd (hooks may modify output)
-//     d. If tool == create_plan → also fire OnPlanCreated
 //  4. Append assistant message + tool results to history, loop back to 1
 //  5. Abort with error if maxIter is exceeded
 func (a *Agent) Run(ctx context.Context, input string) (*Result, error) {
@@ -46,10 +44,11 @@ func (a *Agent) Run(ctx context.Context, input string) (*Result, error) {
 	// ── ReAct loop ────────────────────────────────────────────────────────────
 	for iter := 1; iter <= a.maxIter; iter++ {
 		req := &provider.Request{
-			System:   a.systemPrompt,
-			Messages: messages,
-			Tools:    toolDefs,
-			Stream:   true,
+			System:        a.systemPrompt,
+			Messages:      messages,
+			Tools:         toolDefs,
+			Stream:        true,
+			ThinkingLevel: a.thinkingLevel,
 		}
 
 		// ── Think ────────────────────────────────────────────────────────────
@@ -192,14 +191,6 @@ func (a *Agent) executeTool(ctx context.Context, iter int, tc provider.ToolCall)
 
 	if runErr != nil {
 		return errorResult(tc.ID, runErr), runErr
-	}
-
-	// ── OnPlanCreated (plan tool special case) ────────────────────────────────
-	if tc.Name == plantool.ToolName {
-		if steps, ok := plantool.ParseResult(effectiveOutput); ok {
-			planEvent := &hook.PlanCreatedEvent{Iteration: iter, Steps: steps}
-			_ = a.hooks.OnPlanCreated(ctx, planEvent)
-		}
 	}
 
 	return provider.ToolResult{

@@ -1,14 +1,14 @@
-// examples/plan_demo/main.go
+// examples/plan/main.go
 //
 // Demonstrates the ReAct agent with:
-//   - Anthropic provider (streaming)
+//   - OpenAI provider (streaming)
 //   - Built-in plan tool
 //   - A custom PlanUIHook that renders the plan to the terminal
 //   - A simple calculator tool to show non-plan tool calls
 //
 // Usage:
 //
-//	ANTHROPIC_API_KEY=sk-... go run ./examples/plan_demo
+//	go run ./examples/plan
 package main
 
 import (
@@ -20,17 +20,22 @@ import (
 	"strings"
 
 	"github.com/xusenlin/go-agent/agent"
-	anthropicprovider "github.com/xusenlin/go-agent/provider/anthropic"
+	"github.com/xusenlin/go-agent/config"
 	"github.com/xusenlin/go-agent/hook"
 	hookbuiltin "github.com/xusenlin/go-agent/hook/builtin"
+	"github.com/xusenlin/go-agent/provider"
+	openai "github.com/xusenlin/go-agent/provider/openai"
 	"github.com/xusenlin/go-agent/tool"
 	"github.com/xusenlin/go-agent/tool/plan"
 )
 
 func main() {
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	// Load environment variables from .env file
+	config.LoadEnv()
+
+	apiKey, model, baseURL := config.GetOpenAIConfig()
 	if apiKey == "" {
-		fmt.Fprintln(os.Stderr, "ANTHROPIC_API_KEY is not set")
+		fmt.Fprintln(os.Stderr, "OPENAI_API_KEY is not set")
 		os.Exit(1)
 	}
 
@@ -38,10 +43,11 @@ func main() {
 
 	// ── Build agent ───────────────────────────────────────────────────────────
 	a, err := agent.New().
-		WithProvider(anthropicprovider.New(apiKey, nil)).
-		WithModel("claude-opus-4-7"). // unified model setter, works for any provider
+		WithProvider(openai.New(apiKey, nil, openai.WithBaseURL(baseURL))).
+		WithModel(model).
 		WithTools(plan.New(), newCalculator()).
 		WithMaxIter(10).
+		WithThinkingLevel(provider.ThinkingLevelHigh).
 		Use(hookbuiltin.NewLogger(slog.Default())).
 		Use(&PlanUIHook{}).
 		Build()
@@ -73,20 +79,28 @@ func main() {
 // Replace the fmt.Println calls with your actual UI framework (Bubble Tea, etc).
 type PlanUIHook struct{ hook.BaseHook }
 
-func (h *PlanUIHook) OnPlanCreated(_ context.Context, e *hook.PlanCreatedEvent) error {
-	fmt.Println("\n📋 Plan created:")
-	for i, step := range e.Steps {
-		fmt.Printf("  %d. [%s] %s\n", i+1, step.Status, step.Title)
-		if step.Description != "" {
-			fmt.Printf("     └─ %s\n", step.Description)
-		}
-	}
-	fmt.Println()
-	return nil
-}
-
 func (h *PlanUIHook) OnToolEnd(_ context.Context, e *hook.ToolEndEvent) error {
-	if e.ToolName != "create_plan" {
+	if e.ToolName == "create_plan" {
+		// Parse plan output
+		var result struct {
+			Title string `json:"title"`
+			Steps []struct {
+				Title       string `json:"title"`
+				Description string `json:"description"`
+				Status      string `json:"status"`
+			} `json:"steps"`
+		}
+		if err := json.Unmarshal([]byte(e.Output), &result); err == nil {
+			fmt.Println("\n📋 Plan created:", result.Title)
+			for i, step := range result.Steps {
+				fmt.Printf("  %d. [%s] %s\n", i+1, step.Status, step.Title)
+				if step.Description != "" {
+					fmt.Printf("     └─ %s\n", step.Description)
+				}
+			}
+			fmt.Println()
+		}
+	} else {
 		fmt.Printf("✅ Tool %q finished\n", e.ToolName)
 	}
 	return nil

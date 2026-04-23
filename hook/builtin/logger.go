@@ -72,18 +72,6 @@ func (l *Logger) OnToolEnd(_ context.Context, e *hook.ToolEndEvent) error {
 	return nil
 }
 
-func (l *Logger) OnPlanCreated(_ context.Context, e *hook.PlanCreatedEvent) error {
-	titles := make([]string, len(e.Steps))
-	for i, s := range e.Steps {
-		titles[i] = s.Title
-	}
-	l.log.Info("[plan] created",
-		"iteration", e.Iteration,
-		"steps", titles,
-	)
-	return nil
-}
-
 func (l *Logger) OnAgentFinish(_ context.Context, e *hook.AgentFinishEvent) error {
 	l.log.Info("[agent] finish",
 		"iterations", e.Iterations,

@@ -29,79 +29,53 @@ func (c *Chain) Len() int { return len(c.hooks) }
 // Errors are accumulated and returned via errors.Join.
 
 func (c *Chain) OnAgentStart(ctx context.Context, e *AgentStartEvent) error {
-	var errs []error
-	for _, h := range c.hooks {
-		if err := h.OnAgentStart(ctx, e); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
+	return c.dispatch(func(h Hook) error {
+		return h.OnAgentStart(ctx, e)
+	})
 }
 
 func (c *Chain) OnThinkStart(ctx context.Context, e *ThinkStartEvent) error {
-	var errs []error
-	for _, h := range c.hooks {
-		if err := h.OnThinkStart(ctx, e); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
+	return c.dispatch(func(h Hook) error {
+		return h.OnThinkStart(ctx, e)
+	})
 }
 
 func (c *Chain) OnThinkEnd(ctx context.Context, e *ThinkEndEvent) error {
-	var errs []error
-	for _, h := range c.hooks {
-		if err := h.OnThinkEnd(ctx, e); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
+	return c.dispatch(func(h Hook) error {
+		return h.OnThinkEnd(ctx, e)
+	})
 }
 
 func (c *Chain) OnToolStart(ctx context.Context, e *ToolStartEvent) error {
-	var errs []error
-	for _, h := range c.hooks {
-		if err := h.OnToolStart(ctx, e); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
+	return c.dispatch(func(h Hook) error {
+		return h.OnToolStart(ctx, e)
+	})
 }
 
 func (c *Chain) OnToolEnd(ctx context.Context, e *ToolEndEvent) error {
-	var errs []error
-	for _, h := range c.hooks {
-		if err := h.OnToolEnd(ctx, e); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
-}
-
-func (c *Chain) OnPlanCreated(ctx context.Context, e *PlanCreatedEvent) error {
-	var errs []error
-	for _, h := range c.hooks {
-		if err := h.OnPlanCreated(ctx, e); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
+	return c.dispatch(func(h Hook) error {
+		return h.OnToolEnd(ctx, e)
+	})
 }
 
 func (c *Chain) OnAgentFinish(ctx context.Context, e *AgentFinishEvent) error {
-	var errs []error
-	for _, h := range c.hooks {
-		if err := h.OnAgentFinish(ctx, e); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
+	return c.dispatch(func(h Hook) error {
+		return h.OnAgentFinish(ctx, e)
+	})
 }
 
 func (c *Chain) OnAgentError(ctx context.Context, e *AgentErrorEvent) error {
+	return c.dispatch(func(h Hook) error {
+		return h.OnAgentError(ctx, e)
+	})
+}
+
+// dispatch is a helper that iterates over all hooks, calls the provided function,
+// and collects any errors. Execution continues even if individual hooks fail.
+func (c *Chain) dispatch(fn func(Hook) error) error {
 	var errs []error
 	for _, h := range c.hooks {
-		if err := h.OnAgentError(ctx, e); err != nil {
+		if err := fn(h); err != nil {
 			errs = append(errs, err)
 		}
 	}

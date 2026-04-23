@@ -4,6 +4,7 @@ package agent
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/xusenlin/go-agent/hook"
@@ -22,12 +23,28 @@ When you have enough information to answer, respond directly without calling any
 // Agent is the assembled, ready-to-run agent.
 // Create one via Builder.Build() and call Run() to start the ReAct loop.
 type Agent struct {
-	provider     provider.Provider
-	registry     *tool.Registry
-	hooks        *hook.Chain
-	systemPrompt string
-	maxIter      int
-	proxy        *provider.ProxyConfig
+	provider      provider.Provider
+	registry      *tool.Registry
+	hooks         *hook.Chain
+	systemPrompt  string
+	maxIter       int
+	thinkingLevel provider.ThinkingLevel
+	proxy         *provider.ProxyConfig
+	mcpClients    []*mcp.Client
+}
+
+// Close releases resources held by the agent, including MCP client connections.
+func (a *Agent) Close() error {
+	var errs []error
+	for _, c := range a.mcpClients {
+		if err := c.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("agent: close MCP clients: %v", errs)
+	}
+	return nil
 }
 
 // ─── Builder ──────────────────────────────────────────────────────────────────
@@ -35,16 +52,17 @@ type Agent struct {
 // Builder constructs an Agent through a fluent API.
 // Start with New() and finish with Build().
 type Builder struct {
-	provider     provider.Provider
-	model        string // optional override applied to provider at Build() time
-	tools        []tool.Tool
-	skills       []skill.Skill
-	mcpSpecs     []string
-	hooks        []hook.Hook
-	systemPrompt string
-	maxIter      int
-	proxy        *provider.ProxyConfig
-	errs         []error
+	provider      provider.Provider
+	model         string // optional override applied to provider at Build() time
+	tools         []tool.Tool
+	skills        []skill.Skill
+	mcpSpecs      []string
+	hooks         []hook.Hook
+	systemPrompt  string
+	maxIter       int
+	thinkingLevel provider.ThinkingLevel // thinking/reasoning depth level
+	proxy         *provider.ProxyConfig
+	errs          []error
 }
 
 // New returns a fresh Builder.
@@ -108,6 +126,14 @@ func (b *Builder) WithMaxIter(n int) *Builder {
 	return b
 }
 
+// WithThinkingLevel sets the thinking/reasoning depth level for the LLM.
+// Options: provider.ThinkingLevelNone (default), provider.ThinkingLevelLow,
+// provider.ThinkingLevelMedium, provider.ThinkingLevelHigh.
+func (b *Builder) WithThinkingLevel(level provider.ThinkingLevel) *Builder {
+	b.thinkingLevel = level
+	return b
+}
+
 // WithProxy sets an HTTP proxy for all outbound connections (LLM API calls,
 // MCP SSE connections, and the env vars injected into MCP stdio processes).
 func (b *Builder) WithProxy(proxy provider.ProxyConfig) *Builder {
@@ -127,6 +153,11 @@ func (b *Builder) Use(hooks ...hook.Hook) *Builder {
 func (b *Builder) Build() (*Agent, error) {
 	if b.provider == nil {
 		return nil, errors.New("agent: WithProvider is required")
+	}
+
+	// Validate maxIter
+	if b.maxIter <= 0 {
+		return nil, errors.New("agent: maxIter must be positive")
 	}
 
 	// Apply model override, if any
@@ -159,12 +190,18 @@ func (b *Builder) Build() (*Agent, error) {
 
 	// MCP tools (discovered at build time, using background context)
 	// The context is short-lived; actual tool calls use the Run() context.
+	var mcpClients []*mcp.Client
 	for _, spec := range b.mcpSpecs {
-		mcpTools, _, err := mcp.DiscoverTools(b.buildCtx(), spec, b.proxy)
+		mcpTools, client, err := mcp.DiscoverTools(b.buildCtx(), spec, b.proxy)
 		if err != nil {
+			// Close any previously opened MCP clients
+			for _, c := range mcpClients {
+				_ = c.Close()
+			}
 			return nil, errors.Join(errors.New("agent: MCP discover failed for "+spec), err)
 		}
 		reg.Register(mcpTools...)
+		mcpClients = append(mcpClients, client)
 	}
 
 	// Build hook chain
@@ -172,11 +209,13 @@ func (b *Builder) Build() (*Agent, error) {
 	chain.Add(b.hooks...)
 
 	return &Agent{
-		provider:     b.provider,
-		registry:     reg,
-		hooks:        chain,
-		systemPrompt: strings.Join(systemParts, "\n"),
-		maxIter:      b.maxIter,
-		proxy:        b.proxy,
+		provider:      b.provider,
+		registry:      reg,
+		hooks:         chain,
+		systemPrompt:  strings.Join(systemParts, "\n"),
+		maxIter:       b.maxIter,
+		thinkingLevel: b.thinkingLevel,
+		proxy:         b.proxy,
+		mcpClients:    mcpClients,
 	}, nil
 }

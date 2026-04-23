@@ -133,6 +133,10 @@ func (s *SchemaBuilder) Build() json.RawMessage {
 	if len(s.req) > 0 {
 		s.schema["required"] = s.req
 	}
-	raw, _ := json.Marshal(s.schema)
+	raw, err := json.Marshal(s.schema)
+	if err != nil {
+		// This should never happen with a valid schema, but handle it gracefully
+		return json.RawMessage(`{"type": "object"}`)
+	}
 	return raw
 }

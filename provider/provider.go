@@ -19,9 +19,9 @@ const (
 
 // Message is a single turn in the conversation.
 type Message struct {
-	Role      Role
-	Content   string
-	ToolCalls []ToolCall   // assistant → tool calls
+	Role        Role
+	Content     string
+	ToolCalls   []ToolCall   // assistant → tool calls
 	ToolResults []ToolResult // user → tool results
 }
 
@@ -48,12 +48,23 @@ type ToolDef struct {
 
 // ─── Request / Response ──────────────────────────────────────────────────────
 
+// ThinkingLevel represents the depth of reasoning/thinking for the LLM.
+type ThinkingLevel string
+
+const (
+	ThinkingLevelNone   ThinkingLevel = ""       // No thinking (default)
+	ThinkingLevelLow    ThinkingLevel = "low"    // Low thinking depth
+	ThinkingLevelMedium ThinkingLevel = "medium" // Medium thinking depth
+	ThinkingLevelHigh   ThinkingLevel = "high"   // High thinking depth
+)
+
 // Request is the unified chat request across all providers.
 type Request struct {
-	System   string
-	Messages []Message
-	Tools    []ToolDef
-	Stream   bool // hint; streaming is always handled via Stream()
+	System        string
+	Messages      []Message
+	Tools         []ToolDef
+	Stream        bool          // hint; streaming is always handled via Stream()
+	ThinkingLevel ThinkingLevel // thinking/reasoning depth level (empty = disabled)
 }
 
 // Response is the fully assembled LLM response (non-streaming or assembled).
@@ -61,15 +72,27 @@ type Response struct {
 	Content    string
 	ToolCalls  []ToolCall
 	StopReason string // "end_turn" | "tool_use" | "max_tokens"
+	Usage      Usage  // token usage stats (may be zero if unavailable)
+}
+
+// Usage holds token usage statistics for a request.
+type Usage struct {
+	InputTokens  int
+	OutputTokens int
+	TotalTokens  int
 }
 
 // Chunk is a single streaming delta from the LLM.
 type Chunk struct {
-	Delta      string
-	ToolCallID string // non-empty when this chunk carries tool call info
-	ToolName   string
-	InputDelta string // partial JSON for tool input
-	Done       bool
+	Delta        string // text delta
+	ToolCallID   string // non-empty when this chunk carries tool call info
+	ToolName     string
+	InputDelta   string // partial JSON for tool input
+	Done         bool
+	InputTokens  int  // cumulative input tokens for this request
+	OutputTokens int  // cumulative output tokens for this request
+	TotalTokens  int  // total tokens (input + output)
+	IsThinking   bool // true if this chunk contains thinking/reasoning content
 }
 
 // ─── Provider interface ───────────────────────────────────────────────────────

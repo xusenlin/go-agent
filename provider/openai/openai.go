@@ -1,5 +1,3 @@
-// Package openai provides an OpenAI-compatible provider that works with
-// OpenAI, DeepSeek, Moonshot, and any other OpenAI-spec compliant endpoint.
 package openai
 
 import (
@@ -18,17 +16,22 @@ import (
 const defaultBaseURL = "https://api.openai.com/v1"
 const defaultModel = "gpt-4o"
 
+const thinkStart = "<think>"
+const thinkEnd = "</think>"
+
+// Provider implements provider.Provider using OpenAI-compatible API.
 type Provider struct {
-	apiKey  string
-	baseURL string
-	model   string
-	http    *http.Client
+	apiKey      string
+	baseURL     string
+	model       string
+	http        *http.Client
+	inThinking  bool // tracks whether we're inside a thinking block across chunks
 }
 
 type Option func(*Provider)
 
 func WithModel(model string) Option   { return func(p *Provider) { p.model = model } }
-func WithBaseURL(u string) Option     { return func(p *Provider) { p.baseURL = strings.TrimRight(u, "/") } }
+func WithBaseURL(u string) Option    { return func(p *Provider) { p.baseURL = strings.TrimRight(u, "/") } }
 
 func New(apiKey string, proxy *provider.ProxyConfig, opts ...Option) *Provider {
 	p := &Provider{
@@ -43,24 +46,26 @@ func New(apiKey string, proxy *provider.ProxyConfig, opts ...Option) *Provider {
 	return p
 }
 
-func (p *Provider) Name() string      { return "openai" }
-func (p *Provider) Model() string     { return p.model }
+func (p *Provider) Name() string    { return "openai" }
+func (p *Provider) Model() string   { return p.model }
 func (p *Provider) SetModel(m string) { p.model = m }
-
-// ─── Chat ─────────────────────────────────────────────────────────────────────
 
 func (p *Provider) Chat(ctx context.Context, req *provider.Request) (*provider.Response, error) {
 	body, err := p.buildBody(req, false)
 	if err != nil {
 		return nil, err
 	}
+
 	httpResp, err := p.do(ctx, body)
 	if err != nil {
 		return nil, err
 	}
 	defer httpResp.Body.Close()
-	raw, _ := io.ReadAll(httpResp.Body)
 
+	raw, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("openai: read response: %w", err)
+	}
 	var resp chatResponse
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return nil, fmt.Errorf("openai: parse response: %w", err)
@@ -68,13 +73,12 @@ func (p *Provider) Chat(ctx context.Context, req *provider.Request) (*provider.R
 	return resp.toProviderResponse(), nil
 }
 
-// ─── Stream ───────────────────────────────────────────────────────────────────
-
 func (p *Provider) Stream(ctx context.Context, req *provider.Request) (<-chan *provider.Chunk, error) {
 	body, err := p.buildBody(req, true)
 	if err != nil {
 		return nil, err
 	}
+
 	httpResp, err := p.do(ctx, body)
 	if err != nil {
 		return nil, err
@@ -87,6 +91,7 @@ func (p *Provider) Stream(ctx context.Context, req *provider.Request) (<-chan *p
 
 		var assembled provider.Response
 		scanner := bufio.NewScanner(httpResp.Body)
+
 		for scanner.Scan() {
 			line := scanner.Text()
 			if !strings.HasPrefix(line, "data: ") {
@@ -100,13 +105,20 @@ func (p *Provider) Stream(ctx context.Context, req *provider.Request) (<-chan *p
 			if err := json.Unmarshal([]byte(data), &ev); err != nil {
 				continue
 			}
+
 			for _, choice := range ev.Choices {
 				delta := choice.Delta.Content
-				assembled.Content += delta
-				ch <- &provider.Chunk{Delta: delta}
 
+				// Process delta - strip thinking tags and mark as IsThinking
+				processed := p.processThinkingTags(delta)
+
+				for _, seg := range processed {
+					assembled.Content += seg.Text
+					ch <- &provider.Chunk{Delta: seg.Text, IsThinking: seg.IsThinking}
+				}
+
+				// Accumulate tool calls
 				for _, tc := range choice.Delta.ToolCalls {
-					// accumulate tool calls by index
 					for len(assembled.ToolCalls) <= tc.Index {
 						assembled.ToolCalls = append(assembled.ToolCalls, provider.ToolCall{})
 					}
@@ -125,6 +137,18 @@ func (p *Provider) Stream(ctx context.Context, req *provider.Request) (<-chan *p
 					assembled.StopReason = "end_turn"
 				}
 			}
+
+			if ev.Usage != nil {
+				data, _ := json.Marshal(assembled)
+				ch <- &provider.Chunk{
+					Done:          true,
+					Delta:         string(data),
+					InputTokens:   ev.Usage.PromptTokens,
+					OutputTokens:  ev.Usage.CompletionTokens,
+					TotalTokens:   ev.Usage.TotalTokens,
+				}
+				return
+			}
 		}
 		data, _ := json.Marshal(assembled)
 		ch <- &provider.Chunk{Done: true, Delta: string(data)}
@@ -132,12 +156,78 @@ func (p *Provider) Stream(ctx context.Context, req *provider.Request) (<-chan *p
 	return ch, nil
 }
 
-// ─── HTTP helpers ─────────────────────────────────────────────────────────────
+// segment represents a processed text segment with its thinking status
+type segment struct {
+	Text       string
+	IsThinking bool
+}
+
+// processThinkingTags parses delta text and returns segments with thinking status.
+// It finds all <think> and </think> tags, splits text at these boundaries,
+// and marks segments between <think> and </think> as thinking content.
+// It maintains state across calls via p.inThinking to handle tags split across chunks.
+func (p *Provider) processThinkingTags(delta string) []segment {
+	if delta == "" {
+		return nil
+	}
+
+	var result []segment
+	start := 0
+
+	for start < len(delta) {
+		// Find next tag position
+		nextStart := strings.Index(delta[start:], thinkStart)
+		nextEnd := strings.Index(delta[start:], thinkEnd)
+
+		// Determine which tag comes first
+		var tagPos int
+		var isStartTag bool
+
+		switch {
+		case nextStart == -1 && nextEnd == -1:
+			// No more tags, emit remaining text
+			result = append(result, segment{Text: delta[start:], IsThinking: p.inThinking})
+			return result
+		case nextStart == -1:
+			tagPos = nextEnd
+			isStartTag = false
+		case nextEnd == -1:
+			tagPos = nextStart
+			isStartTag = true
+		case nextStart < nextEnd:
+			tagPos = nextStart
+			isStartTag = true
+		default:
+			tagPos = nextEnd
+			isStartTag = false
+		}
+
+		// Emit text before this tag
+		if tagPos > 0 {
+			result = append(result, segment{Text: delta[start : start+tagPos], IsThinking: p.inThinking})
+		}
+
+		// Skip past the tag
+		if isStartTag {
+			start += tagPos + len(thinkStart)
+			p.inThinking = true
+		} else {
+			start += tagPos + len(thinkEnd)
+			p.inThinking = false
+		}
+	}
+
+	return result
+}
 
 func (p *Provider) do(ctx context.Context, body []byte) (*http.Response, error) {
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("openai: create request: %w", err)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+
 	resp, err := p.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("openai: http: %w", err)
@@ -211,10 +301,17 @@ func (p *Provider) buildBody(req *provider.Request, stream bool) ([]byte, error)
 	if len(tools) > 0 {
 		payload["tools"] = tools
 	}
+	if stream {
+		payload["stream_options"] = map[string]any{"include_usage": true}
+	}
+
+	// Add thinking level if specified
+	if req.ThinkingLevel != "" {
+		payload["reasoning_effort"] = string(req.ThinkingLevel)
+	}
+
 	return json.Marshal(payload)
 }
-
-// ─── JSON shapes ──────────────────────────────────────────────────────────────
 
 type chatResponse struct {
 	Choices []struct {
@@ -230,6 +327,11 @@ type chatResponse struct {
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+	Usage *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage"`
 }
 
 func (r *chatResponse) toProviderResponse() *provider.Response {
@@ -238,6 +340,13 @@ func (r *chatResponse) toProviderResponse() *provider.Response {
 	}
 	c := r.Choices[0]
 	resp := &provider.Response{Content: c.Message.Content, StopReason: "end_turn"}
+	if r.Usage != nil {
+		resp.Usage = provider.Usage{
+			InputTokens:  r.Usage.PromptTokens,
+			OutputTokens: r.Usage.CompletionTokens,
+			TotalTokens:  r.Usage.TotalTokens,
+		}
+	}
 	for _, tc := range c.Message.ToolCalls {
 		resp.ToolCalls = append(resp.ToolCalls, provider.ToolCall{
 			ID:    tc.ID,
@@ -266,4 +375,9 @@ type streamEvent struct {
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+	Usage *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage"`
 }

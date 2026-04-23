@@ -1,12 +1,12 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 
 	"github.com/xusenlin/go-agent/provider"
 )
@@ -29,8 +29,8 @@ func New(apiKey string, proxy *provider.ProxyConfig) *Provider {
 	return p
 }
 
-func (p *Provider) Name() string  { return "anthropic" }
-func (p *Provider) Model() string { return p.model }
+func (p *Provider) Name() string      { return "anthropic" }
+func (p *Provider) Model() string     { return p.model }
 func (p *Provider) SetModel(m string) { p.model = m }
 
 func (p *Provider) Chat(ctx context.Context, req *provider.Request) (*provider.Response, error) {
@@ -45,7 +45,10 @@ func (p *Provider) Chat(ctx context.Context, req *provider.Request) (*provider.R
 	}
 	defer httpResp.Body.Close()
 
-	raw, _ := io.ReadAll(httpResp.Body)
+	raw, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic: read response: %w", err)
+	}
 	var resp anthropicResponse
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return nil, fmt.Errorf("anthropic: parse response: %w", err)
@@ -102,6 +105,14 @@ func (p *Provider) Stream(ctx context.Context, req *provider.Request) (<-chan *p
 						if event.StopReason != "" {
 							assembled.StopReason = event.StopReason
 						}
+					case "message_stop":
+						// Anthropic sends usage stats after message_stop
+						ch <- &provider.Chunk{
+							Done:         true,
+							InputTokens:  event.Usage.InputTokens,
+							OutputTokens: event.Usage.OutputTokens,
+							TotalTokens:  event.Usage.InputTokens + event.Usage.OutputTokens,
+						}
 					}
 				}
 			}
@@ -117,22 +128,41 @@ func (p *Provider) Stream(ctx context.Context, req *provider.Request) (<-chan *p
 }
 
 func extractEvent(data []byte) (string, []byte, bool) {
-	lines := strings.Split(string(data), "\n")
-	for i, line := range lines {
-		if strings.HasPrefix(line, "data: ") {
-			event := strings.TrimPrefix(line, "data: ")
-			if event == "[DONE]" {
-				continue
+	for {
+		// Find the next newline
+		idx := bytes.IndexByte(data, '\n')
+		if idx < 0 {
+			// No newline found, check if data starts with "data: "
+			if bytes.HasPrefix(data, []byte("data: ")) {
+				event := string(data[6:])
+				if event == "[DONE]" {
+					return "", nil, false
+				}
+				return event, nil, true
 			}
-			remaining := []byte(strings.Join(lines[i+1:], "\n"))
+			return "", data, false
+		}
+
+		line := data[:idx]
+		remaining := data[idx+1:]
+
+		if bytes.HasPrefix(line, []byte("data: ")) {
+			event := string(line[6:])
+			if event == "[DONE]" {
+				return "", remaining, false
+			}
 			return event, remaining, true
 		}
+
+		data = remaining
 	}
-	return "", data, false
 }
 
 func (p *Provider) do(ctx context.Context, body []byte) (*http.Response, error) {
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, baseURL, strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("anthropic: create request: %w", err)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", p.apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
@@ -175,10 +205,10 @@ func (p *Provider) buildBody(req *provider.Request, stream bool) ([]byte, error)
 			var toolUses []map[string]any
 			for _, tc := range m.ToolCalls {
 				toolUses = append(toolUses, map[string]any{
-					"type":    "tool_use",
-					"id":      tc.ID,
-					"name":    tc.Name,
-					"input":   json.RawMessage(tc.Input),
+					"type":  "tool_use",
+					"id":    tc.ID,
+					"name":  tc.Name,
+					"input": json.RawMessage(tc.Input),
 				})
 			}
 			blocks := make([]any, 0)
@@ -193,10 +223,10 @@ func (p *Provider) buildBody(req *provider.Request, stream bool) ([]byte, error)
 	}
 
 	payload := map[string]any{
-		"model":       p.model,
-		"max_tokens":  8192,
-		"messages":    messages,
-		"stream":      stream,
+		"model":      p.model,
+		"max_tokens": 8192,
+		"messages":   messages,
+		"stream":     stream,
 	}
 
 	if req.System != "" {
@@ -209,26 +239,46 @@ func (p *Provider) buildBody(req *provider.Request, stream bool) ([]byte, error)
 			var schema any
 			_ = json.Unmarshal(t.InputSchema, &schema)
 			tools = append(tools, map[string]any{
-				"name":        t.Name,
-				"description": t.Description,
+				"name":         t.Name,
+				"description":  t.Description,
 				"input_schema": schema,
 			})
 		}
 		payload["tools"] = tools
 	}
 
+	// Add thinking level if specified
+	if req.ThinkingLevel != "" {
+		budgetTokens := 0
+		switch req.ThinkingLevel {
+		case provider.ThinkingLevelLow:
+			budgetTokens = 2000
+		case provider.ThinkingLevelMedium:
+			budgetTokens = 5000
+		case provider.ThinkingLevelHigh:
+			budgetTokens = 10000
+		}
+
+		if budgetTokens > 0 {
+			payload["thinking"] = map[string]any{
+				"type":          "enabled",
+				"budget_tokens": budgetTokens,
+			}
+		}
+	}
+
 	return json.Marshal(payload)
 }
 
 type anthropicResponse struct {
-	Type        string `json:"type"`
-	Role        string `json:"role"`
-	Content     []struct {
-		Type    string `json:"type"`
-		Text    string `json:"text"`
-		ID      string `json:"id"`
-		Name    string `json:"name"`
-		Input   any    `json:"input"`
+	Type    string `json:"type"`
+	Role    string `json:"role"`
+	Content []struct {
+		Type  string `json:"type"`
+		Text  string `json:"text"`
+		ID    string `json:"id"`
+		Name  string `json:"name"`
+		Input any    `json:"input"`
 	} `json:"content"`
 	StopReason string `json:"stop_reason"`
 }
@@ -255,12 +305,18 @@ func (r *anthropicResponse) toProviderResponse() *provider.Response {
 }
 
 type streamEvent struct {
-	Type       string `json:"type"`
-	Index      int    `json:"index"`
-	Delta      struct {
-		Type   string `json:"type"`
-		Text   string `json:"text"`
-		Part   string `json:"partial_json"`
+	Type  string `json:"type"`
+	Index int    `json:"index"`
+	Delta struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+		Part string `json:"partial_json"`
 	} `json:"delta"`
-	StopReason string `json:"stop_reason"`
+	StopReason string    `json:"stop_reason"`
+	Usage      usageInfo `json:"usage"`
+}
+
+type usageInfo struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
 }

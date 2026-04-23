@@ -178,7 +178,7 @@ agent.New().
 
 ```bash
 # Plan demo (Anthropic)
-ANTHROPIC_API_KEY=sk-... go run ./examples/plan_demo
+ANTHROPIC_API_KEY=sk-... go run ./examples/plan
 
 # MCP filesystem demo (OpenAI-compatible / DeepSeek)
 OPENAI_API_KEY=sk-... \
