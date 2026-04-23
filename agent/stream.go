@@ -30,11 +30,17 @@ const (
 
 // StreamBlock is one atomic unit emitted by RunStream.
 // Every block carries a token delta so callers can persist usage metadata.
+//
+// Content fields (mutually exclusive, determined by Type):
+//   - Delta:   streaming increment (ThinkStream, TextStream)
+//   - Full:    complete content (ThinkEnd, TextEnd, Error)
+//   - Payload: event data (ToolCall input, ToolResult output)
 type StreamBlock struct {
 	Type         BlockType `json:"type"`
 	Iteration    int       `json:"iteration"`
-	Content      string    `json:"content,omitempty"`     // incremental content for stream blocks
-	EndContent   string    `json:"end_content,omitempty"` // full content for end blocks
+	Delta        string    `json:"delta,omitempty"`    // streaming increment: ThinkStream, TextStream
+	Full         string    `json:"full,omitempty"`     // complete content: ThinkEnd, TextEnd, Error
+	Payload      string    `json:"payload,omitempty"`  // event data: ToolCall input, ToolResult output
 	ToolName     string    `json:"tool_name,omitempty"`
 	ToolID       string    `json:"tool_id,omitempty"`
 	IsError      bool      `json:"is_error,omitempty"`
@@ -62,7 +68,7 @@ func (a *Agent) RunStream(ctx context.Context, input string) (<-chan *StreamBloc
 
 	// ── OnAgentStart ─────────────────────────────────────────────────────────
 	if err := a.hooks.OnAgentStart(ctx, &hook.AgentStartEvent{Input: input}); err != nil {
-		blocks <- &StreamBlock{Type: BlockError, Content: fmt.Sprintf("OnAgentStart: %v", err)}
+		blocks <- &StreamBlock{Type: BlockError, Full: fmt.Sprintf("OnAgentStart: %v", err)}
 		close(blocks)
 		return blocks, err
 	}
@@ -85,7 +91,7 @@ func (a *Agent) RunStream(ctx context.Context, input string) (<-chan *StreamBloc
 				Iteration: iter,
 				Messages:  messages,
 			}); err != nil {
-				blocks <- &StreamBlock{Type: BlockError, Content: fmt.Sprintf("OnThinkStart: %v", err)}
+				blocks <- &StreamBlock{Type: BlockError, Full: fmt.Sprintf("OnThinkStart: %v", err)}
 				return
 			}
 
@@ -101,7 +107,7 @@ func (a *Agent) RunStream(ctx context.Context, input string) (<-chan *StreamBloc
 				Response:     resp,
 				StreamTokens: tokens.content,
 			}); err != nil {
-				blocks <- &StreamBlock{Type: BlockError, Content: fmt.Sprintf("OnThinkEnd: %v", err)}
+				blocks <- &StreamBlock{Type: BlockError, Full: fmt.Sprintf("OnThinkEnd: %v", err)}
 				return
 			}
 
@@ -113,7 +119,6 @@ func (a *Agent) RunStream(ctx context.Context, input string) (<-chan *StreamBloc
 				blocks <- &StreamBlock{
 					Type:         BlockFinish,
 					Iteration:    iter,
-					Content:      output,
 					InputTokens:  tokens.input,
 					OutputTokens: tokens.output,
 					TotalTokens:  tokens.total,
@@ -144,7 +149,7 @@ func (a *Agent) RunStream(ctx context.Context, input string) (<-chan *StreamBloc
 
 		// ── Max iterations exceeded ─────────────────────────────────────────
 		err := fmt.Errorf("agent: max iterations (%d) exceeded", a.maxIter)
-		blocks <- &StreamBlock{Type: BlockError, Iteration: a.maxIter, Content: err.Error()}
+		blocks <- &StreamBlock{Type: BlockError, Iteration: a.maxIter, Full: err.Error()}
 		_ = a.hooks.OnAgentError(ctx, &hook.AgentErrorEvent{Err: err, Iterations: a.maxIter})
 	}()
 
@@ -183,7 +188,7 @@ func (a *Agent) streamAndAssembleStream(ctx context.Context, req *provider.Reque
 			blocks <- &StreamBlock{
 				Type:         BlockThinkEnd,
 				Iteration:    iter,
-				EndContent:   content,
+				Full:         content,
 				InputTokens:  lastInputTok,
 				OutputTokens: lastOutputTok,
 				TotalTokens:  lastTotalTok,
@@ -200,7 +205,7 @@ func (a *Agent) streamAndAssembleStream(ctx context.Context, req *provider.Reque
 		blocks <- &StreamBlock{
 			Type:         BlockTextEnd,
 			Iteration:    iter,
-			EndContent:   strings.TrimSpace(content),
+			Full:         strings.TrimSpace(content),
 			InputTokens:  lastInputTok,
 			OutputTokens: lastOutputTok,
 			TotalTokens:  lastTotalTok,
@@ -264,7 +269,7 @@ func (a *Agent) streamAndAssembleStream(ctx context.Context, req *provider.Reque
 			blocks <- &StreamBlock{
 				Type:      BlockThinkStream,
 				Iteration: iter,
-				Content:   chunk.Delta,
+				Delta:     chunk.Delta,
 			}
 		} else {
 			// Send text start on first actual non-empty content
@@ -277,7 +282,7 @@ func (a *Agent) streamAndAssembleStream(ctx context.Context, req *provider.Reque
 				blocks <- &StreamBlock{
 					Type:      BlockTextStream,
 					Iteration: iter,
-					Content:   chunk.Delta,
+					Delta:     chunk.Delta,
 				}
 			}
 		}
@@ -308,7 +313,7 @@ func (a *Agent) executeToolStream(ctx context.Context, iter int, tc provider.Too
 		blocks <- &StreamBlock{
 			Type:      BlockError,
 			Iteration: iter,
-			Content:   result.Content,
+			Full:      result.Content,
 		}
 		return result
 	}
@@ -319,7 +324,7 @@ func (a *Agent) executeToolStream(ctx context.Context, iter int, tc provider.Too
 		Iteration: iter,
 		ToolName:  tc.Name,
 		ToolID:    tc.ID,
-		Content:   string(startEvent.Input),
+		Payload:   string(startEvent.Input),
 	}
 
 	// ── Look up and run tool ─────────────────────────────────────────────────
@@ -338,7 +343,7 @@ func (a *Agent) executeToolStream(ctx context.Context, iter int, tc provider.Too
 			Iteration: iter,
 			ToolName:  tc.Name,
 			ToolID:    tc.ID,
-			Content:   result.Content,
+			Payload:   result.Content,
 			IsError:   true,
 		}
 		return result
@@ -362,7 +367,7 @@ func (a *Agent) executeToolStream(ctx context.Context, iter int, tc provider.Too
 		Iteration: iter,
 		ToolName:  tc.Name,
 		ToolID:    tc.ID,
-		Content:   endEvent.Output,
+		Payload:   endEvent.Output,
 		IsError:   runErr != nil,
 	}
 
@@ -382,7 +387,7 @@ func (a *Agent) emitError(blocks chan<- *StreamBlock, iter int, err error) {
 	blocks <- &StreamBlock{
 		Type:      BlockError,
 		Iteration: iter,
-		Content:   err.Error(),
+		Full:      err.Error(),
 	}
 	_ = a.hooks.OnAgentError(context.Background(), &hook.AgentErrorEvent{Err: err, Iterations: iter})
 }

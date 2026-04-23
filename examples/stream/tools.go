@@ -104,26 +104,26 @@ func printBlock(block *agent.StreamBlock) {
 	case agent.BlockThinkStart:
 		fmt.Println("\n── 思考开始 ──────────────────")
 	case agent.BlockThinkStream:
-		fmt.Print(block.Content)
+		fmt.Print(block.Delta)
 	case agent.BlockThinkEnd:
 		fmt.Println("\n── 思考结束 ──────────────────")
-		fmt.Printf("[完整内容]: %s\n", block.EndContent)
+		fmt.Printf("[完整内容]: %s\n", block.Full)
 	case agent.BlockTextStart:
 		fmt.Println("\n── 回答开始 ──────────────────")
 	case agent.BlockTextStream:
-		fmt.Print(block.Content)
+		fmt.Print(block.Delta)
 	case agent.BlockTextEnd:
 		fmt.Println("\n── 回答结束 ──────────────────")
-		fmt.Printf("[完整内容]: %s\n", block.EndContent)
+		fmt.Printf("[完整内容]: %s\n", block.Full)
 	case agent.BlockToolCall:
 		fmt.Printf("\n── 工具调用 #%d ───────────────\n", block.Iteration)
-		fmt.Printf("工具: %s\n参数: %s\n", block.ToolName, truncate(block.Content, 100))
+		fmt.Printf("工具: %s\n参数: %s\n", block.ToolName, truncate(block.Payload, 100))
 	case agent.BlockToolResult:
 		fmt.Printf("\n── 工具结果 #%d ───────────────\n", block.Iteration)
 		if block.IsError {
-			fmt.Printf("错误: %s\n", block.Content)
+			fmt.Printf("错误: %s\n", block.Payload)
 		} else {
-			fmt.Printf("结果: %s\n", truncate(block.Content, 200))
+			fmt.Printf("结果: %s\n", truncate(block.Payload, 200))
 		}
 	case agent.BlockFinish:
 		fmt.Printf("\n── 完成 #%d ───────────────────\n", block.Iteration)
@@ -133,7 +133,7 @@ func printBlock(block *agent.StreamBlock) {
 		}
 	case agent.BlockError:
 		fmt.Printf("\n── 错误 #%d ───────────────────\n", block.Iteration)
-		fmt.Printf("%s\n", block.Content)
+		fmt.Printf("%s\n", block.Full)
 	}
 }
 

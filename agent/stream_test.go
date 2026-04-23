@@ -122,16 +122,16 @@ func TestStream_ThinkThenText(t *testing.T) {
 		}
 	}
 
-	// 验证 ThinkEnd 的 EndContent
+	// 验证 ThinkEnd 的 Full
 	for _, b := range blocks {
 		if b.Type == BlockThinkEnd {
-			if b.EndContent != "Thinking..." {
-				t.Errorf("ThinkEnd.EndContent: expected %q, got %q", "Thinking...", b.EndContent)
+			if b.Full != "Thinking..." {
+				t.Errorf("ThinkEnd.Full: expected %q, got %q", "Thinking...", b.Full)
 			}
 		}
 		if b.Type == BlockTextEnd {
-			if b.EndContent != "The answer is 42." {
-				t.Errorf("TextEnd.EndContent: expected %q, got %q", "The answer is 42.", b.EndContent)
+			if b.Full != "The answer is 42." {
+				t.Errorf("TextEnd.Full: expected %q, got %q", "The answer is 42.", b.Full)
 			}
 		}
 	}
@@ -307,7 +307,7 @@ func TestStream_EmptyTextIgnored(t *testing.T) {
 }
 
 func TestStream_EndContent(t *testing.T) {
-	// 模拟: 思考 -> 回答，验证 EndContent
+	// 模拟: 思考 -> 回答，验证 Full
 	chunks := []*provider.Chunk{
 		{Delta: "Part1 ", IsThinking: true},
 		{Delta: "Part2", IsThinking: true},
@@ -329,12 +329,12 @@ func TestStream_EndContent(t *testing.T) {
 	for _, b := range blocks {
 		switch b.Type {
 		case BlockThinkEnd:
-			if b.EndContent != "Part1 Part2" {
-				t.Errorf("ThinkEnd.EndContent: expected %q, got %q", "Part1 Part2", b.EndContent)
+			if b.Full != "Part1 Part2" {
+				t.Errorf("ThinkEnd.Full: expected %q, got %q", "Part1 Part2", b.Full)
 			}
 		case BlockTextEnd:
-			if b.EndContent != "Answer1 Answer2" {
-				t.Errorf("TextEnd.EndContent: expected %q, got %q", "Answer1 Answer2", b.EndContent)
+			if b.Full != "Answer1 Answer2" {
+				t.Errorf("TextEnd.Full: expected %q, got %q", "Answer1 Answer2", b.Full)
 			}
 		}
 	}
