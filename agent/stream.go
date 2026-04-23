@@ -114,8 +114,6 @@ func (a *Agent) RunStream(ctx context.Context, input string) (<-chan *StreamBloc
 			// ── End turn: no more tool calls ───────────────────────────────────
 			if resp.StopReason == "end_turn" || len(resp.ToolCalls) == 0 {
 				output := resp.Content
-				log.Printf("[AGENT] Sending BlockFinish: input=%d, output=%d, total=%d\n",
-					tokens.input, tokens.output, tokens.total)
 				blocks <- &StreamBlock{
 					Type:         BlockFinish,
 					Iteration:    iter,
@@ -215,9 +213,6 @@ func (a *Agent) streamAndAssembleStream(ctx context.Context, req *provider.Reque
 	}
 
 	for chunk := range streamCh {
-		log.Printf("[AGENT] Received chunk: Done=%v, InputTokens=%d, OutputTokens=%d, TotalTokens=%d, Delta=%q, Error=%q\n",
-			chunk.Done, chunk.InputTokens, chunk.OutputTokens, chunk.TotalTokens, chunk.Delta, chunk.Error)
-
 		// Check for error from provider
 		if chunk.Error != "" {
 			return nil, nil, fmt.Errorf("%s", chunk.Error)
@@ -225,8 +220,6 @@ func (a *Agent) streamAndAssembleStream(ctx context.Context, req *provider.Reque
 
 		// Accumulate usage stats from any chunk that has them
 		if chunk.InputTokens > 0 || chunk.OutputTokens > 0 || chunk.TotalTokens > 0 {
-			log.Printf("[AGENT] Accumulating tokens: input=%d, output=%d, total=%d\n",
-				chunk.InputTokens, chunk.OutputTokens, chunk.TotalTokens)
 			tokens.input = chunk.InputTokens
 			tokens.output = chunk.OutputTokens
 			tokens.total = chunk.TotalTokens
@@ -240,8 +233,6 @@ func (a *Agent) streamAndAssembleStream(ctx context.Context, req *provider.Reque
 			if err := json.Unmarshal([]byte(chunk.Delta), &assembled); err != nil {
 				log.Printf("[AGENT] Failed to unmarshal Done chunk: %v", err)
 			}
-			log.Printf("[AGENT] Done chunk processed. Final tokens: input=%d, output=%d, total=%d\n",
-				tokens.input, tokens.output, tokens.total)
 			continue
 		}
 

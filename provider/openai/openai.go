@@ -235,7 +235,7 @@ func (p *Provider) do(ctx context.Context, body []byte) (*http.Response, error) 
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, fmt.Errorf("openai: status %d: %s", resp.StatusCode, raw)
+		return nil, fmt.Errorf("openai: status %d [%s]: %s", resp.StatusCode, p.baseURL, raw)
 	}
 	return resp, nil
 }

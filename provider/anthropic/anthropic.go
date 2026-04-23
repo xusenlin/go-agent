@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 
@@ -113,7 +112,6 @@ func (p *Provider) Stream(ctx context.Context, req *provider.Request) (<-chan *p
 
 					var event streamEvent
 					if err := json.Unmarshal([]byte(data), &event); err != nil {
-						log.Printf("[ANTHROPIC] JSON parse error: %v, data: %s\n", err, data)
 						continue
 					}
 
@@ -123,10 +121,7 @@ func (p *Provider) Stream(ctx context.Context, req *provider.Request) (<-chan *p
 							assembled.Content += event.Delta.Text
 							ch <- &provider.Chunk{Delta: event.Delta.Text}
 						}
-					case "message_start":
-						log.Printf("[ANTHROPIC] message_start event: %+v\n", event)
 					case "message_delta":
-						log.Printf("[ANTHROPIC] message_delta event: %+v\n", event)
 						if event.StopReason != "" {
 							assembled.StopReason = event.StopReason
 						}
@@ -139,7 +134,6 @@ func (p *Provider) Stream(ctx context.Context, req *provider.Request) (<-chan *p
 							}
 						}
 					case "message_stop":
-						log.Printf("[ANTHROPIC] message_stop event: %+v\n", event)
 						// Anthropic sends final message_stop
 						ch <- &provider.Chunk{
 							Done:         true,
@@ -208,7 +202,7 @@ func (p *Provider) do(ctx context.Context, body []byte) (*http.Response, error) 
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, fmt.Errorf("anthropic: status %d: %s", resp.StatusCode, raw)
+		return nil, fmt.Errorf("anthropic: status %d [%s]: %s", resp.StatusCode, p.baseURL, raw)
 	}
 	return resp, nil
 }
