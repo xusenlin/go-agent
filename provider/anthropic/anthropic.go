@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
@@ -116,10 +117,16 @@ func (p *Provider) Stream(ctx context.Context, req *provider.Request) (<-chan *p
 					}
 
 					switch event.Type {
+					case "content_block_start":
+						log.Printf("[ANTHROPIC] content_block_start: %+v\n", event)
 					case "content_block_delta":
-						if event.Delta.Type == "text_delta" {
+						log.Printf("[ANTHROPIC] content_block_delta: type=%s, text=%q, thinking=%q\n", 
+							event.Delta.Type, event.Delta.Text, event.Delta.Thinking)
+						if event.Delta.Type == "text_delta" && event.Delta.Text != "" {
 							assembled.Content += event.Delta.Text
 							ch <- &provider.Chunk{Delta: event.Delta.Text}
+						} else if event.Delta.Type == "thinking_delta" && event.Delta.Thinking != "" {
+							ch <- &provider.Chunk{Delta: event.Delta.Thinking, IsThinking: true}
 						}
 					case "message_delta":
 						if event.StopReason != "" {
@@ -336,9 +343,10 @@ type streamEvent struct {
 	Type  string `json:"type"`
 	Index int    `json:"index"`
 	Delta struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-		Part string `json:"partial_json"`
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		Thinking string `json:"thinking"` // for thinking_delta
+		Part     string `json:"partial_json"`
 	} `json:"delta"`
 	StopReason string    `json:"stop_reason"`
 	Usage      usageInfo `json:"usage"`

@@ -117,12 +117,18 @@ func (p *Provider) Stream(ctx context.Context, req *provider.Request) (<-chan *p
 			}
 			partial := p.convertResponse(resp)
 			if partial != nil {
-				assembled.Content += partial.Content
-				assembled.ToolCalls = append(assembled.ToolCalls, partial.ToolCalls...)
-				assembled.StopReason = partial.StopReason
+				// Handle thinking content
+				if partial.Thinking != "" {
+					ch <- &provider.Chunk{Delta: partial.Thinking, IsThinking: true}
+				}
+				// Handle regular content
 				if partial.Content != "" {
 					ch <- &provider.Chunk{Delta: partial.Content}
 				}
+				assembled.Content += partial.Content
+				assembled.Thinking += partial.Thinking
+				assembled.ToolCalls = append(assembled.ToolCalls, partial.ToolCalls...)
+				assembled.StopReason = partial.StopReason
 			}
 		}
 		data, err := json.Marshal(assembled)
@@ -216,6 +222,9 @@ func (p *Provider) convertResponse(resp *genai.GenerateContentResponse) *provide
 		}
 		for _, part := range cand.Content.Parts {
 			switch {
+			case part.Text != "" && part.Thought:
+				// This is thinking content
+				r.Thinking += part.Text
 			case part.Text != "":
 				r.Content += part.Text
 			case part.FunctionCall != nil:

@@ -70,6 +70,7 @@ type Request struct {
 // Response is the fully assembled LLM response (non-streaming or assembled).
 type Response struct {
 	Content    string
+	Thinking   string    // thinking/reasoning content
 	ToolCalls  []ToolCall
 	StopReason string // "end_turn" | "tool_use" | "max_tokens"
 	Usage      Usage  // token usage stats (may be zero if unavailable)
