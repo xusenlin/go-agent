@@ -89,17 +89,18 @@ type Chunk struct {
 	ToolName     string
 	InputDelta   string // partial JSON for tool input
 	Done         bool
-	InputTokens  int  // cumulative input tokens for this request
-	OutputTokens int  // cumulative output tokens for this request
-	TotalTokens  int  // total tokens (input + output)
-	IsThinking   bool // true if this chunk contains thinking/reasoning content
+	InputTokens  int    // cumulative input tokens for this request
+	OutputTokens int    // cumulative output tokens for this request
+	TotalTokens  int    // total tokens (input + output)
+	IsThinking   bool   // true if this chunk contains thinking/reasoning content
+	Error        string // non-empty when an error occurred
 }
 
 // ─── Provider interface ───────────────────────────────────────────────────────
 
 // Provider is the unified interface every LLM backend must implement.
 type Provider interface {
-	// Name returns the provider identifier, e.g. "anthropic", "gemini".
+	// Name returns the provider identifier, e.g. "anthropic", "google".
 	Name() string
 
 	// Model returns the currently configured model name.

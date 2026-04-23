@@ -6,25 +6,37 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"strings"
 
 	"github.com/xusenlin/go-agent/provider"
 )
 
 const defaultModel = "claude-opus-4-7"
-const baseURL = "https://api.anthropic.com/v1/messages"
+const defaultBaseURL = "https://api.anthropic.com/v1/messages"
 
 type Provider struct {
-	apiKey string
-	model  string
-	http   *http.Client
+	apiKey  string
+	baseURL string
+	model   string
+	http    *http.Client
 }
 
-func New(apiKey string, proxy *provider.ProxyConfig) *Provider {
+type Option func(*Provider)
+
+func WithModel(model string) Option   { return func(p *Provider) { p.model = model } }
+func WithBaseURL(u string) Option     { return func(p *Provider) { p.baseURL = strings.TrimRight(u, "/") } }
+
+func New(apiKey string, proxy *provider.ProxyConfig, opts ...Option) *Provider {
 	p := &Provider{
-		apiKey: apiKey,
-		model:  defaultModel,
-		http:   proxy.HTTPClient(),
+		apiKey:  apiKey,
+		baseURL: defaultBaseURL,
+		model:   defaultModel,
+		http:    proxy.HTTPClient(),
+	}
+	for _, o := range opts {
+		o(p)
 	}
 	return p
 }
@@ -82,6 +94,15 @@ func (p *Provider) Stream(ctx context.Context, req *provider.Request) (<-chan *p
 			n, err := reader.Read(tmp)
 			if n > 0 {
 				buf = append(buf, tmp[:n]...)
+
+				// Check if response is HTML (not JSON)
+				if len(buf) > 0 && (buf[0] == '<' || bytes.HasPrefix(bytes.TrimSpace(buf), []byte("<!doctype"))) {
+					ch <- &provider.Chunk{
+						Error: fmt.Sprintf("API returned HTML instead of JSON. Please check baseURL (current: %s)", p.baseURL),
+					}
+					return
+				}
+
 				// Process complete events
 				for {
 					data, remaining, found := extractEvent(buf)
@@ -92,6 +113,7 @@ func (p *Provider) Stream(ctx context.Context, req *provider.Request) (<-chan *p
 
 					var event streamEvent
 					if err := json.Unmarshal([]byte(data), &event); err != nil {
+						log.Printf("[ANTHROPIC] JSON parse error: %v, data: %s\n", err, data)
 						continue
 					}
 
@@ -101,12 +123,24 @@ func (p *Provider) Stream(ctx context.Context, req *provider.Request) (<-chan *p
 							assembled.Content += event.Delta.Text
 							ch <- &provider.Chunk{Delta: event.Delta.Text}
 						}
+					case "message_start":
+						log.Printf("[ANTHROPIC] message_start event: %+v\n", event)
 					case "message_delta":
+						log.Printf("[ANTHROPIC] message_delta event: %+v\n", event)
 						if event.StopReason != "" {
 							assembled.StopReason = event.StopReason
 						}
+						// Send usage stats from message_delta (Anthropic sends output_tokens here)
+						if event.Usage.OutputTokens > 0 {
+							ch <- &provider.Chunk{
+								InputTokens:  event.Usage.InputTokens,
+								OutputTokens: event.Usage.OutputTokens,
+								TotalTokens:  event.Usage.InputTokens + event.Usage.OutputTokens,
+							}
+						}
 					case "message_stop":
-						// Anthropic sends usage stats after message_stop
+						log.Printf("[ANTHROPIC] message_stop event: %+v\n", event)
+						// Anthropic sends final message_stop
 						ch <- &provider.Chunk{
 							Done:         true,
 							InputTokens:  event.Usage.InputTokens,
@@ -159,7 +193,7 @@ func extractEvent(data []byte) (string, []byte, bool) {
 }
 
 func (p *Provider) do(ctx context.Context, body []byte) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: create request: %w", err)
 	}

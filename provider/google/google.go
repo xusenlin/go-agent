@@ -1,9 +1,10 @@
-package gemini
+package google
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/xusenlin/go-agent/provider"
 	"google.golang.org/genai"
@@ -13,36 +14,58 @@ const defaultModel = "gemini-2.0-flash"
 
 // Provider implements provider.Provider using the official Google GenAI SDK.
 type Provider struct {
-	client *genai.Client
-	model  string
+	apiKey  string
+	baseURL string
+	proxy   *provider.ProxyConfig
+	client  *genai.Client
+	model   string
 }
 
 // Option is a functional option setter.
 type Option func(*Provider)
 
-func WithModel(model string) Option { return func(p *Provider) { p.model = model } }
+func WithModel(model string) Option   { return func(p *Provider) { p.model = model } }
+func WithBaseURL(u string) Option     { return func(p *Provider) { p.baseURL = strings.TrimRight(u, "/") } }
 
-func New(ctx context.Context, apiKey string, proxy *provider.ProxyConfig, opts ...Option) (*Provider, error) {
-	cfg := &genai.ClientConfig{
-		APIKey:     apiKey,
-		HTTPClient: proxy.HTTPClient(),
+func New(apiKey string, proxy *provider.ProxyConfig, opts ...Option) *Provider {
+	p := &Provider{
+		apiKey: apiKey,
+		proxy:  proxy,
+		model:  defaultModel,
 	}
-	client, err := genai.NewClient(ctx, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("gemini: new client: %w", err)
-	}
-	p := &Provider{client: client, model: defaultModel}
 	for _, o := range opts {
 		o(p)
 	}
-	return p, nil
+	return p
 }
 
-func (p *Provider) Name() string      { return "gemini" }
+func (p *Provider) ensureClient() error {
+	if p.client != nil {
+		return nil
+	}
+	cfg := &genai.ClientConfig{
+		APIKey:     p.apiKey,
+		HTTPClient: p.proxy.HTTPClient(),
+	}
+	if p.baseURL != "" {
+		cfg.HTTPOptions.BaseURL = p.baseURL
+	}
+	client, err := genai.NewClient(context.Background(), cfg)
+	if err != nil {
+		return fmt.Errorf("google: new client: %w", err)
+	}
+	p.client = client
+	return nil
+}
+
+func (p *Provider) Name() string      { return "google" }
 func (p *Provider) Model() string     { return p.model }
 func (p *Provider) SetModel(m string) { p.model = m }
 
 func (p *Provider) Chat(ctx context.Context, req *provider.Request) (*provider.Response, error) {
+	if err := p.ensureClient(); err != nil {
+		return nil, err
+	}
 	contents := p.buildContents(req.Messages)
 	tools := p.buildTools(req.Tools)
 	cfg := &genai.GenerateContentConfig{
@@ -59,12 +82,15 @@ func (p *Provider) Chat(ctx context.Context, req *provider.Request) (*provider.R
 
 	resp, err := p.client.Models.GenerateContent(ctx, p.model, contents, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("gemini chat: %w", err)
+		return nil, fmt.Errorf("google chat: %w", err)
 	}
 	return p.convertResponse(resp), nil
 }
 
 func (p *Provider) Stream(ctx context.Context, req *provider.Request) (<-chan *provider.Chunk, error) {
+	if err := p.ensureClient(); err != nil {
+		return nil, err
+	}
 	ch := make(chan *provider.Chunk, 64)
 	go func() {
 		defer close(ch)
