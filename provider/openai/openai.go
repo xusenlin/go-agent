@@ -21,17 +21,19 @@ const thinkEnd = "</think>"
 
 // Provider implements provider.Provider using OpenAI-compatible API.
 type Provider struct {
-	apiKey      string
-	baseURL     string
-	model       string
-	http        *http.Client
-	inThinking  bool // tracks whether we're inside a thinking block across chunks
+	apiKey           string
+	baseURL          string
+	model            string
+	http             *http.Client
+	inThinking       bool // tracks whether we're inside a thinking block across chunks
+	reasoningEffort  bool // whether to send reasoning_effort parameter
 }
 
 type Option func(*Provider)
 
 func WithModel(model string) Option   { return func(p *Provider) { p.model = model } }
 func WithBaseURL(u string) Option    { return func(p *Provider) { p.baseURL = strings.TrimRight(u, "/") } }
+func WithReasoningEffort(enabled bool) Option { return func(p *Provider) { p.reasoningEffort = enabled } }
 
 func New(apiKey string, proxy *provider.ProxyConfig, opts ...Option) *Provider {
 	p := &Provider{
@@ -305,8 +307,8 @@ func (p *Provider) buildBody(req *provider.Request, stream bool) ([]byte, error)
 		payload["stream_options"] = map[string]any{"include_usage": true}
 	}
 
-	// Add thinking level if specified
-	if req.ThinkingLevel != "" {
+	// Add thinking level if specified and enabled
+	if req.ThinkingLevel != "" && p.reasoningEffort {
 		payload["reasoning_effort"] = string(req.ThinkingLevel)
 	}
 
