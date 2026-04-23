@@ -62,9 +62,10 @@ func (a *Agent) RunStream(ctx context.Context, input string) (<-chan *StreamBloc
 
 	toolDefs := tool.ToProviderDefs(a.registry.All())
 
-	messages := []provider.Message{
-		{Role: provider.RoleUser, Content: input},
-	}
+	// Build messages: history + current input
+	messages := make([]provider.Message, 0, len(a.history)+1)
+	messages = append(messages, a.history...)
+	messages = append(messages, provider.Message{Role: provider.RoleUser, Content: input})
 
 	// ── OnAgentStart ─────────────────────────────────────────────────────────
 	if err := a.hooks.OnAgentStart(ctx, &hook.AgentStartEvent{Input: input}); err != nil {

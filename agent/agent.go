@@ -31,6 +31,7 @@ type Agent struct {
 	thinkingLevel provider.ThinkingLevel
 	proxy         *provider.ProxyConfig
 	mcpClients    []*mcp.Client
+	history       []provider.Message // conversation history before the current input
 }
 
 // Close releases resources held by the agent, including MCP client connections.
@@ -62,6 +63,7 @@ type Builder struct {
 	maxIter       int
 	thinkingLevel provider.ThinkingLevel // thinking/reasoning depth level
 	proxy         *provider.ProxyConfig
+	history       []provider.Message // conversation history before the current input
 	errs          []error
 }
 
@@ -141,6 +143,13 @@ func (b *Builder) WithProxy(proxy provider.ProxyConfig) *Builder {
 	return b
 }
 
+// WithHistory sets the conversation history to include before the current input.
+// This allows the agent to have context from previous messages in the conversation.
+func (b *Builder) WithHistory(history []provider.Message) *Builder {
+	b.history = history
+	return b
+}
+
 // Use adds one or more hooks to the chain. Hooks fire in registration order.
 func (b *Builder) Use(hooks ...hook.Hook) *Builder {
 	b.hooks = append(b.hooks, hooks...)
@@ -217,5 +226,6 @@ func (b *Builder) Build() (*Agent, error) {
 		thinkingLevel: b.thinkingLevel,
 		proxy:         b.proxy,
 		mcpClients:    mcpClients,
+		history:       b.history,
 	}, nil
 }
